@@ -1,1 +1,1 @@
-# eddington_ICs_sampling
+# Eddington ICs Sampling
