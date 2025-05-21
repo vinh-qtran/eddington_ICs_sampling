@@ -275,7 +275,7 @@ class BaseProfile:
             )
         
         _reconstructed_rho_bins = []
-        for phi in tqdm(phi_bins):
+        for phi in tqdm(phi_bins,desc="Reconstructing densities:"):
             _reconstructed_rho_bins.append(
                 quad(
                     _rho_integrand, 0, np.sqrt(-2*phi), args=(-phi,)
@@ -612,7 +612,7 @@ class BaseICs(BaseProfile):
             Path to the output HDF5 file.
         '''
 
-        part_mass = self._get_particle_mass()
+        part_mass = self._get_particle_mass() / 1e10
         part_r, part_x, part_y, part_z = self._sample_particle_positions()
         part_vx, part_vy, part_vz = self._sample_particle_velocities(part_r)
 
