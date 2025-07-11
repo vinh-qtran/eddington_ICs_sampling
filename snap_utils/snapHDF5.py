@@ -10,11 +10,22 @@
 #
 # Mark Vogelsberger (mvogelsb@cfa.harvard.edu)
 
+import os
+import sys
+import subprocess
+from pathlib import Path
+
+repo_root = subprocess.run(
+    ["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True
+).stdout.strip()
+
+sys.path.append(repo_root)
+
 import numpy as np
 import os
 import sys
 import math
-import hdf5lib
+import snap_utils.hdf5lib as hdf5lib
 
 ############ 
 #DATABLOCKS#

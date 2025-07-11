@@ -1,10 +1,23 @@
+import os
+import sys
+import subprocess
+from pathlib import Path
+
+repo_root = subprocess.run(
+    ["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True
+).stdout.strip()
+
+sys.path.append(repo_root)
+
+##########################################################################################
+
 import numpy as np
 
 from scipy.interpolate import CubicSpline
-from scipy.integrate import cumulative_trapezoid, quad
+from scipy.integrate import cumulative_trapezoid, quad, solve_ivp
 from scipy.optimize import minimize
 
-import snapHDF5 as ws
+import snap_utils.snapHDF5 as ws
 
 from tqdm import tqdm
 
@@ -137,7 +150,7 @@ class BaseProfile:
         )
         return _delta_phi_bins - _delta_phi_bins[-1]
     
-    def _get_sigma_bins(self, r_bins, rho_bins, mass_bins):
+    def _get_sigma_r_bins(self, r_bins, rho_bins, phi_bins, beta=0):
         '''
         Get the velocity dispersion profile of the halo.
 
@@ -147,21 +160,54 @@ class BaseProfile:
             Array of radius bins in kpc.
         rho_bins: array
             Array of density bins in M_sun / kpc^3.
-        mass_bins: array
-            Array of mass bins in M_sun.
+        phi_bins: array
+            Array of potential bins in (km/s)^2.
+        beta: float
+            Anisotropy parameter. Default is 0, which corresponds to isotropic orbits.
 
         Returns:
         -------
         sigma_bins: array
             Array of velocity dispersion bins in km/s.
         '''
+        # _lin_lin_dlogrho_dlogr_interp = self._get_interp(
+        #     (np.log(r_bins[:-1]) + np.log(r_bins[1:])) / 2,
+        #     np.diff(np.log(rho_bins)) / np.diff(np.log(r_bins))
+        # )
 
-        _sigma_integrand = self.G * mass_bins * rho_bins / r_bins**2
-        _delta_sigma_bins = cumulative_trapezoid(
-            _sigma_integrand, r_bins, initial=0
+        # _lin_lin_dphi_dlogr_interp = self._get_interp(
+        #     (np.log(r_bins[:-1]) + np.log(r_bins[1:])) / 2,
+        #     np.diff(phi_bins) / np.diff(np.log(r_bins))
+        # )
+
+        # def _sigma_r_sqr_integrand(log_r, sigma_r_sqr):
+        #     return - _lin_lin_dphi_dlogr_interp(log_r) \
+        #            - sigma_r_sqr * (2*beta + _lin_lin_dlogrho_dlogr_interp(log_r))
+        
+        # _sigma_r_sqr_sol = solve_ivp(
+        #     _sigma_r_sqr_integrand,
+        #     t_span = (np.log(r_bins[-1]), np.log(r_bins[0])),
+        #     y0 = [0],
+        #     t_eval = np.flip(np.log(r_bins)),
+        # )
+
+        # # print(_sigma_r_sqr_sol.message)
+        # # print(_sigma_r_sqr_sol.t.shape)
+        # # print(_sigma_r_sqr_sol.t)
+        # # print(_sigma_r_sqr_sol.y[0])
+
+        # return np.flip(
+        #     np.sqrt(_sigma_r_sqr_sol.y[0])
+        # )
+
+        mass_bins = self._get_mass_bins(r_bins, rho_bins)
+
+        _delta_rho_sigma_r_sqr_integrand = self.G * mass_bins * rho_bins / r_bins**2
+        _delta_sigma_rho_bins = cumulative_trapezoid(
+            _delta_rho_sigma_r_sqr_integrand, r_bins, initial=0
         )
         return np.sqrt(
-            (_delta_sigma_bins[-1] - _delta_sigma_bins) / rho_bins
+            (_delta_sigma_rho_bins[-1] - _delta_sigma_rho_bins) / rho_bins
         )
     
     def _get_Eddington_bins(self, rho_bins, phi_bins):
@@ -227,8 +273,8 @@ class BaseProfile:
             Array of mass bins in M_sun.
         phi_bins: array
             Array of potential bins in (km/s)^2.
-        sigma_bins: array
-            Array of velocity dispersion bins in km/s.
+        sigma_r_bins: array
+            Array of radial velocity dispersion bins in km/s.
         eta_bins: array
             Array of eta bins in (km/s)^2.
         f_eta_bins: array
@@ -241,10 +287,10 @@ class BaseProfile:
         rho_bins = self._get_rho_bins(r_bins)
         mass_bins = self._get_mass_bins(r_bins, rho_bins)
         phi_bins = self._get_phi_bins(r_bins, mass_bins)
-        sigma_bins = self._get_sigma_bins(r_bins, rho_bins, mass_bins)
+        sigma_r_bins = self._get_sigma_r_bins(r_bins, rho_bins, phi_bins)
         eta_bins, f_eta_bins = self._get_Eddington_bins(rho_bins, phi_bins)
 
-        return r_bins, rho_bins, mass_bins, phi_bins, sigma_bins, eta_bins, f_eta_bins
+        return r_bins, rho_bins, mass_bins, phi_bins, sigma_r_bins, eta_bins, f_eta_bins
     
     def reconstruct_density(self, phi_bins, eta_bins, f_eta_bins):
         '''
@@ -283,6 +329,9 @@ class BaseProfile:
             )
         
         return np.array(_reconstructed_rho_bins)
+    
+class BaseEddingtonProfile(BaseProfile):
+    pass
     
 ##########################################################################################
 
@@ -326,7 +375,7 @@ class BaseICs(BaseProfile):
 
         self._check_sampling_range()
 
-        self.r_bins, self.rho_bins, self.mass_bins, self.phi_bins, self.sigma_bins, self.eta_bins, self.f_eta_bins = self.get_profiles()
+        self.r_bins, self.rho_bins, self.mass_bins, self.phi_bins, self.sigma_r_bins, self.eta_bins, self.f_eta_bins = self.get_profiles()
         self.log_log_mass_interp, self.log_log_inverse_mass_interp, self.lin_log_eddington_interp = self._get_profiles_interp()
 
         self.seed = seed
@@ -495,7 +544,7 @@ class BaseICs(BaseProfile):
         interp_psi_bins = - (self.phi_bins[:-1] + self.phi_bins[1:]) / 2
         interp_vmax_bins = np.sqrt(2*interp_psi_bins)
 
-        interp_sigma_bins = (self.sigma_bins[:-1] + self.sigma_bins[1:]) / 2
+        interp_sigma_r_bins = (self.sigma_r_bins[:-1] + self.sigma_r_bins[1:]) / 2
 
         propose_v0_bins = np.zeros(self.N_bins-1)
         propose_sigma_bins = np.zeros(self.N_bins-1)
@@ -506,7 +555,7 @@ class BaseICs(BaseProfile):
                 lambda v : -self._Eddington_velocity_distribution(
                     v, interp_psi_bins[i], interp_rho_bins[i]
                 ),
-                x0=interp_sigma_bins[i], bounds=[(0, interp_vmax_bins[i])]
+                x0=interp_sigma_r_bins[i], bounds=[(0, interp_vmax_bins[i])]
             )
 
             propose_v0_bins[i] = Eddington_peak.x[0]
