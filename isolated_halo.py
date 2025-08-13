@@ -141,19 +141,16 @@ class BaseProfile:
             Radius at which to evaluate the potential in kpc.
         R: float
             Radius of the shell in kpc
+        epsilon: float
+            Plummer-equivalent softening length for the gravitational potential in kpc.
 
         Returns:
         -------
         grav_frac: float
             Gravitational potential fraction at the given radius.
         '''
-        
-        def _grav_frac(r, R, epsilon):
-            #return - 1 / r
 
-            return - 1 / r * (np.sqrt((r + R)**2 + epsilon**2) - np.sqrt((r - R)**2 + epsilon**2)) / (2 * R)
-
-        return np.where(r > R, _grav_frac(r, R, epsilon), _grav_frac(R, R, epsilon))
+        return - 1 / r * (np.sqrt((r + R)**2 + epsilon**2) - np.sqrt((r - R)**2 + epsilon**2)) / (2 * R)
 
     def _get_phi_bins(self, r_bins, rho_bins):
         '''
@@ -171,23 +168,6 @@ class BaseProfile:
         phi_bins: array
             Array of potential bins in (km/s)^2.
         '''
-
-        # _delta_phi_integrand = - self._get_grav_force(r_bins, mass_bins)
-        # _delta_phi_bins = cumulative_trapezoid(
-        #     _delta_phi_integrand, r_bins, initial=0
-        # )
-        # return _delta_phi_bins - _delta_phi_bins[-1]
-
-        # _inner_phi_bins = self.G * mass_bins * self._get_grav_frac(r_bins, self.epsilon)
-        # _inner_phi_bins -= _inner_phi_bins[-1]
-
-        # _delta_outer_phi_integrand = self.G * 4*np.pi * r_bins**2 * rho_bins * self._get_grav_frac(r_bins, self.epsilon)
-        # _delta_outer_phi_bins = cumulative_trapezoid(
-        #     _delta_outer_phi_integrand, r_bins, initial=0
-        # )
-        # _outer_phi_bins = _delta_outer_phi_bins[-1] - _delta_outer_phi_bins
-
-        # return _inner_phi_bins + _outer_phi_bins
 
         _phi_bins = []
 
@@ -375,19 +355,6 @@ class BaseProfile:
                 )[0]
             )
 
-        # def _rho_integrand(eta, psi):
-        #     return 4*np.pi * np.sqrt(2) * np.exp(
-        #         _lin_log_eddington_interp(eta)
-        #     ) * np.sqrt(psi - eta)
-
-        # _reconstructed_rho_bins = []
-        # for phi in tqdm(phi_bins,desc="Reconstructing densities:"):
-        #     _reconstructed_rho_bins.append(
-        #         quad(
-        #             _rho_integrand, 0, -phi, args=(-phi,)
-        #         )[0]
-        #     )
-
         return np.array(_reconstructed_rho_bins)
     
 class BaseEddingtonProfile(BaseProfile):
@@ -402,7 +369,8 @@ class BaseICs(BaseProfile):
 
     def __init__(self,
                  r_bin_min, r_bin_max, N_bins,
-                 r_sample_min, r_sample_max, N_part,
+                 r_sample_min, r_sample_max, 
+                 N200, r200,
                  epsilon=0,
                  seed=42):
         super().__init__(r_bin_min, r_bin_max, N_bins, epsilon)
@@ -422,8 +390,11 @@ class BaseICs(BaseProfile):
             Minimum sampling radius of the halo in kpc.
         r_sample_max: float
             Maximum sampling radius of the halo in kpc.
-        N_part: int
-            Number of particles to sample from the halo.
+
+        r200: float
+            Virial radius of the halo in kpc.
+        N200: int
+            Number of particles within r200 to sample from the halo.
 
         epsilon: float
             Plummer-equivalent softening length for the gravitational potential in kpc.
@@ -435,12 +406,12 @@ class BaseICs(BaseProfile):
         self.r_sample_min = r_sample_min
         self.r_sample_max = r_sample_max
 
-        self.N_part = N_part
-
         self._check_sampling_range()
 
         self.r_bins, self.rho_bins, self.mass_bins, self.phi_bins, self.sigma_r_bins, self.eta_bins, self.f_eta_bins = self.get_profiles()
         self.log_log_mass_interp, self.log_log_inverse_mass_interp, self.lin_log_eddington_interp = self._get_profiles_interp()
+
+        self.N_part = self._get_N_part(N200, r200)
 
         self.seed = seed
         np.random.seed(self.seed)
@@ -485,7 +456,34 @@ class BaseICs(BaseProfile):
         )
 
         return _log_log_mass_interp, _log_log_inverse_mass_interp, _lin_log_eddington_interp
-        
+
+    def _get_N_part(self, N200, r200):
+        '''
+        Get the total number of particles within r_sample_max.
+
+        Parameters:
+        ----------
+        N200: int
+            Number of particles within r200 to sample from the halo.
+        r200: float
+            Virial radius of the halo in kpc.
+
+        Returns:
+        -------
+        N_part: int
+            The total number of particles to sample from the halo.
+        '''
+
+        _m_halo = (
+            np.exp(self.log_log_mass_interp(np.log(self.r_sample_max))) - np.exp(self.log_log_mass_interp(np.log(self.r_sample_min)))
+        )
+
+        _m_200 = (
+            np.exp(self.log_log_mass_interp(np.log(r200))) - np.exp(self.log_log_mass_interp(np.log(self.r_sample_min)))
+        )
+
+        return int(N200 * _m_halo / _m_200)
+
     def _get_particle_mass(self):
         '''
         Get the mass of the particles in the halo.
@@ -575,81 +573,9 @@ class BaseICs(BaseProfile):
             self.lin_log_eddington_interp(psi - v**2/2)
         ) / rho
     
-    def _get_proposal_distributions(self,min_scale=3,max_scale=10):
-        '''
-        Get the proposal distributions for the rejection sampling of the velocities.
-
-        Parameters:
-        ----------
-        N_v_bins: int
-            Number of velocity bins to use for the proposal distributions analysis.
-        min_scale: float
-            Minimum scale for the proposed distribution.
-        max_scale: float
-            Maximum scale for the proposed distribution.
-        
-        Returns:
-        -------
-        interp_rho_bins: array
-            Array of interpolated density bins in M_sun / kpc^3.
-        interp_psi_bins: array
-            Array of interpolated negative potential bins in (km/s)^2.
-        interp_vmax_bins: array
-            Array of interpolated maximum velocity bins in km/s.
-
-        propose_v0_bins: array
-            Array of proposed mean velocity bins in km/s.
-        propose_sigma_bins: array
-            Array of proposed velocity dispersion bins in km/s.
-        propose_scale_bins: array
-            Array of proposed distribution scale bins.
-        '''
-        interp_rho_bins = np.exp((np.log(self.rho_bins[:-1]) + np.log(self.rho_bins[1:]))/2)
-        interp_psi_bins = - (self.phi_bins[:-1] + self.phi_bins[1:]) / 2
-        interp_vmax_bins = np.sqrt(2*interp_psi_bins)
-
-        interp_sigma_r_bins = (self.sigma_r_bins[:-1] + self.sigma_r_bins[1:]) / 2
-
-        propose_v0_bins = np.zeros(self.N_bins-1, dtype=np.float64)
-        propose_sigma_bins = np.zeros(self.N_bins-1, dtype=np.float64)
-        propose_scale_bins = np.zeros(self.N_bins-1, dtype=np.float64)
-
-        for i in tqdm(range(self.N_bins-1),desc="Proposal distributions:"):
-            Eddington_peak = minimize(
-                lambda v : -self._Eddington_velocity_distribution(
-                    v, interp_psi_bins[i], interp_rho_bins[i]
-                ),
-                x0=interp_sigma_r_bins[i], bounds=[(0, interp_vmax_bins[i])]
-            )
-
-            propose_v0_bins[i] = Eddington_peak.x[0]
-            propose_sigma_bins[i] = - 1/np.sqrt(2*np.pi)/Eddington_peak.fun
-
-            def _inverted_equivalent_scaling_factor(v):
-                return propose_sigma_bins[i] / (v - propose_v0_bins[i]) * np.sqrt(
-                    np.log(
-                        1 / (
-                            2*np.pi * propose_sigma_bins[i]**2 * self._Eddington_velocity_distribution(
-                                v, interp_psi_bins[i], interp_rho_bins[i]
-                            )**2
-                        )
-                    )
-                )
-
-            propose_scale_bins[i] = 1 / max(1/max_scale, min(1/min_scale,
-                minimize(
-                    _inverted_equivalent_scaling_factor,
-                    x0 = min(interp_vmax_bins[i], propose_v0_bins[i] + propose_sigma_bins[i]),
-                    bounds=[(propose_v0_bins[i], interp_vmax_bins[i])],
-                ).fun
-            ))
-
-        return interp_rho_bins, interp_psi_bins, interp_vmax_bins, \
-               propose_v0_bins, propose_sigma_bins, propose_scale_bins
-    
     def _sample_particle_velocities(self,part_r):
         '''
-        Sample the velocities of the particles in the halo using rejection sampling.
+        Sample the velocities of the particles in the halo using inversion sampling.
 
         Parameters:
         ----------
@@ -665,48 +591,45 @@ class BaseICs(BaseProfile):
         part_vz: array
             Array of particle z-velocities in km/s.
         '''
-        interp_rho_bins, interp_psi_bins, interp_vmax_bins, \
-        propose_v0_bins, propose_sigma_bins, propose_scale_bins = self._get_proposal_distributions()            
+        _interp_rho_bins = np.exp((np.log(self.rho_bins[:-1]) + np.log(self.rho_bins[1:]))/2)
+        _interp_psi_bins = - (self.phi_bins[:-1] + self.phi_bins[1:]) / 2
+        _interp_vmax_bins = np.sqrt(2*_interp_psi_bins)
 
-        proposal_indices = np.digitize(part_r, self.r_bins) - 1
+        _interp_sigma_r_bins = (self.sigma_r_bins[:-1] + self.sigma_r_bins[1:]) / 2
+
+        _bin_indices = np.digitize(part_r, self.r_bins) - 1
 
         part_v = np.zeros(self.N_part, dtype=np.float64)
-        rejected_indinces = np.arange(self.N_part)
 
-        i = 0
-        while True:
-            n_resample = len(rejected_indinces)
+        for i in tqdm(range(self.N_bins-1),desc="Sampling velocities:"):
+            _bin_mask = _bin_indices == i
 
-            if n_resample == 0:
-                break
-            i += 1
+            if np.sum(_bin_mask) == 0:
+                continue
 
-            sampling_indices = proposal_indices[rejected_indinces]
-            v_sampled = np.random.normal(
-                propose_v0_bins[sampling_indices],
-                propose_scale_bins[sampling_indices] * propose_sigma_bins[sampling_indices],
-            ).astype(np.float64)
+            _v_peak = minimize(
+                lambda v : -self._Eddington_velocity_distribution(
+                    v, _interp_psi_bins[i], _interp_rho_bins[i]
+                ),
+                x0=_interp_sigma_r_bins[i], bounds=[(0, _interp_vmax_bins[i])]
+            ).x[0]
 
-            p_v_sampled_proposal = 1.1 * propose_scale_bins[sampling_indices] * self._Gaussian_distribution(
-                v_sampled, propose_v0_bins[sampling_indices], 
-                propose_scale_bins[sampling_indices] * propose_sigma_bins[sampling_indices]
+            _v_bins = np.logspace(np.log10(_v_peak) - 3, np.log10(_interp_vmax_bins[i]), self.N_bins, dtype=np.float64)
+
+            _p_v_bins = self._Eddington_velocity_distribution(
+                _v_bins, _interp_psi_bins[i], _interp_rho_bins[i]
             )
 
-            p_v_sampled = self._Eddington_velocity_distribution(
-                v_sampled, interp_psi_bins[sampling_indices], interp_rho_bins[sampling_indices]
+            _P_v_bins = cumulative_trapezoid(
+                _p_v_bins, _v_bins, initial=0
+            )
+            _P_v_normalize = np.max(_P_v_bins[np.isfinite(_P_v_bins)])
+
+            _lin_lin_inverse_P_v_interp = self._get_interp(
+                _P_v_bins/_P_v_normalize, _v_bins
             )
 
-            part_v[rejected_indinces] = v_sampled
-            rejected_indinces = rejected_indinces[np.logical_or(
-                np.random.uniform(0, 1, n_resample).astype(np.float64) > p_v_sampled / p_v_sampled_proposal,
-                np.logical_or(
-                    v_sampled > interp_vmax_bins[sampling_indices],
-                    v_sampled < 0
-                )
-            )]
-
-            if i % 10 == 0:
-                print(f"  inter {i}: {n_resample}")
+            part_v[_bin_mask] = _lin_lin_inverse_P_v_interp(np.random.uniform(0, 1, np.sum(_bin_mask)).astype(np.float64))
 
         part_v_phi = 2*np.pi * np.random.uniform(0, 1, self.N_part).astype(np.float64)
         part_v_theta = np.arcsin(2*np.random.uniform(0, 1, self.N_part).astype(np.float64) - 1)
