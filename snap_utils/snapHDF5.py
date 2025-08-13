@@ -333,7 +333,7 @@ def read_block_single_file(filename, block_name, dim2, parttype=-1, no_mass_repl
 						print("[single] read particles (total) : ", ret_val.shape[0]/dim2)
 						sys.stdout.flush()
 					if (doubleflag==0):
-						ret_val=ret_val.astype("float32")
+						ret_val=ret_val.astype("float64")
 
 
 				#fill fill_block_name with zeros if fill_block_name is set and particle type is present and fill_block_name not already stored in file for that particle type
@@ -354,7 +354,7 @@ def read_block_single_file(filename, block_name, dim2, parttype=-1, no_mass_repl
 						print("[single] read particles (total) : ", ret_val.shape[0]/dim2)
 						sys.stdout.flush()
 					if (doubleflag==0):
-						ret_val=ret_val.astype("float32")
+						ret_val=ret_val.astype("float64")
 
 				#default: just read the block
 				if (hdf5lib.Contains(f,part_name,block_name)):

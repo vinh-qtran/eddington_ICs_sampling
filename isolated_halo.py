@@ -33,7 +33,8 @@ class BaseProfile:
 
     def __init__(self,
                  r_bin_min, r_bin_max, N_bins,
-                 G=4.301e-6):
+                 epsilon=0,
+                 G=4.30071e-6):
         '''
         Initialize the base profile class.
 
@@ -45,6 +46,8 @@ class BaseProfile:
             Maximum profile radius of the halo in kpc.
         N_bins: int
             Number of bins to use for the profiles.
+        epsilon: float
+            Plummer-equivalent softening length for the gravitational potential in kpc.
         G: float
             Gravitational constant in kpc M_sun^-1 (km/s)^2.
         '''
@@ -55,6 +58,7 @@ class BaseProfile:
         self.N_bins = N_bins
 
         self.G = G
+        self.epsilon = epsilon
 
     def _get_interp(self, x_bins, y_bins):
         '''
@@ -103,7 +107,7 @@ class BaseProfile:
         '''
 
         raise NotImplementedError("Not implemented in base class.")
-    
+
     def _get_mass_bins(self, r_bins, rho_bins):
         '''
         Get the mass profile of the halo.
@@ -127,7 +131,31 @@ class BaseProfile:
             _mass_integrand, r_bins, initial=0
         ) + _zero_mass
     
-    def _get_phi_bins(self, r_bins, mass_bins):
+    def _get_grav_frac(self, r, R, epsilon):
+        '''
+        Get the gravitational potential fraction.
+
+        Parameters:
+        ----------
+        r: float
+            Radius at which to evaluate the potential in kpc.
+        R: float
+            Radius of the shell in kpc
+
+        Returns:
+        -------
+        grav_frac: float
+            Gravitational potential fraction at the given radius.
+        '''
+        
+        def _grav_frac(r, R, epsilon):
+            #return - 1 / r
+
+            return - 1 / r * (np.sqrt((r + R)**2 + epsilon**2) - np.sqrt((r - R)**2 + epsilon**2)) / (2 * R)
+
+        return np.where(r > R, _grav_frac(r, R, epsilon), _grav_frac(R, R, epsilon))
+
+    def _get_phi_bins(self, r_bins, rho_bins):
         '''
         Get the potential profile of the halo.
 
@@ -135,8 +163,8 @@ class BaseProfile:
         ----------
         r_bins: array
             Array of radius bins in kpc.
-        mass_bins: array
-            Array of mass bins in M_sun.
+        rho_bins: array
+            Array of density bins in M_sun / kpc^3.
 
         Returns:
         -------
@@ -144,12 +172,32 @@ class BaseProfile:
             Array of potential bins in (km/s)^2.
         '''
 
-        _delta_phi_integrand = self.G * mass_bins / r_bins**2
-        _delta_phi_bins = cumulative_trapezoid(
-            _delta_phi_integrand, r_bins, initial=0
-        )
-        return _delta_phi_bins - _delta_phi_bins[-1]
-    
+        # _delta_phi_integrand = - self._get_grav_force(r_bins, mass_bins)
+        # _delta_phi_bins = cumulative_trapezoid(
+        #     _delta_phi_integrand, r_bins, initial=0
+        # )
+        # return _delta_phi_bins - _delta_phi_bins[-1]
+
+        # _inner_phi_bins = self.G * mass_bins * self._get_grav_frac(r_bins, self.epsilon)
+        # _inner_phi_bins -= _inner_phi_bins[-1]
+
+        # _delta_outer_phi_integrand = self.G * 4*np.pi * r_bins**2 * rho_bins * self._get_grav_frac(r_bins, self.epsilon)
+        # _delta_outer_phi_bins = cumulative_trapezoid(
+        #     _delta_outer_phi_integrand, r_bins, initial=0
+        # )
+        # _outer_phi_bins = _delta_outer_phi_bins[-1] - _delta_outer_phi_bins
+
+        # return _inner_phi_bins + _outer_phi_bins
+
+        _phi_bins = []
+
+        for i in range(self.N_bins):
+            _phi_integrand = self.G * 4*np.pi * r_bins**2 * rho_bins * self._get_grav_frac(r_bins[i], r_bins, self.epsilon)
+
+            _phi_bins.append(np.trapz(_phi_integrand, r_bins))
+
+        return np.array(_phi_bins) - _phi_bins[-1]
+
     def _get_sigma_r_bins(self, r_bins, rho_bins, phi_bins, beta=0):
         '''
         Get the velocity dispersion profile of the halo.
@@ -200,9 +248,7 @@ class BaseProfile:
         #     np.sqrt(_sigma_r_sqr_sol.y[0])
         # )
 
-        mass_bins = self._get_mass_bins(r_bins, rho_bins)
-
-        _delta_rho_sigma_r_sqr_integrand = self.G * mass_bins * rho_bins / r_bins**2
+        _delta_rho_sigma_r_sqr_integrand = rho_bins * np.gradient(phi_bins, np.log(r_bins)) / r_bins
         _delta_sigma_rho_bins = cumulative_trapezoid(
             _delta_rho_sigma_r_sqr_integrand, r_bins, initial=0
         )
@@ -282,11 +328,12 @@ class BaseProfile:
         '''
 
         r_bins = np.logspace(
-            np.log10(self.r_bin_min), np.log10(self.r_bin_max), self.N_bins
+            np.log10(self.r_bin_min), np.log10(self.r_bin_max), self.N_bins,
+            dtype=np.float64
         )
         rho_bins = self._get_rho_bins(r_bins)
         mass_bins = self._get_mass_bins(r_bins, rho_bins)
-        phi_bins = self._get_phi_bins(r_bins, mass_bins)
+        phi_bins = self._get_phi_bins(r_bins, rho_bins)
         sigma_r_bins = self._get_sigma_r_bins(r_bins, rho_bins, phi_bins)
         eta_bins, f_eta_bins = self._get_Eddington_bins(rho_bins, phi_bins)
 
@@ -327,7 +374,20 @@ class BaseProfile:
                     _rho_integrand, 0, np.sqrt(-2*phi), args=(-phi,)
                 )[0]
             )
-        
+
+        # def _rho_integrand(eta, psi):
+        #     return 4*np.pi * np.sqrt(2) * np.exp(
+        #         _lin_log_eddington_interp(eta)
+        #     ) * np.sqrt(psi - eta)
+
+        # _reconstructed_rho_bins = []
+        # for phi in tqdm(phi_bins,desc="Reconstructing densities:"):
+        #     _reconstructed_rho_bins.append(
+        #         quad(
+        #             _rho_integrand, 0, -phi, args=(-phi,)
+        #         )[0]
+        #     )
+
         return np.array(_reconstructed_rho_bins)
     
 class BaseEddingtonProfile(BaseProfile):
@@ -343,8 +403,9 @@ class BaseICs(BaseProfile):
     def __init__(self,
                  r_bin_min, r_bin_max, N_bins,
                  r_sample_min, r_sample_max, N_part,
+                 epsilon=0,
                  seed=42):
-        super().__init__(r_bin_min, r_bin_max, N_bins)
+        super().__init__(r_bin_min, r_bin_max, N_bins, epsilon)
         '''
         Initialize the base ICs class. 
 
@@ -363,6 +424,9 @@ class BaseICs(BaseProfile):
             Maximum sampling radius of the halo in kpc.
         N_part: int
             Number of particles to sample from the halo.
+
+        epsilon: float
+            Plummer-equivalent softening length for the gravitational potential in kpc.
 
         seed: int
             Seed for the random number generator.
@@ -451,15 +515,15 @@ class BaseICs(BaseProfile):
             Array of particle z-coordinates in kpc.
         '''
 
-        part_phi = 2*np.pi * np.random.uniform(0, 1, self.N_part)
-        part_theta = np.arcsin(2*np.random.uniform(0, 1, self.N_part) - 1)
-        
+        part_phi = 2*np.pi * np.random.uniform(0, 1, self.N_part).astype(np.float64)
+        part_theta = np.arcsin(2*np.random.uniform(0, 1, self.N_part).astype(np.float64) - 1)
+
         part_r = np.exp(self.log_log_inverse_mass_interp(
             np.log(np.random.uniform(
                 np.exp(self.log_log_mass_interp(np.log(self.r_sample_min))),
                 np.exp(self.log_log_mass_interp(np.log(self.r_sample_max))),
-                self.N_part
-            ))
+                self.N_part,
+            ).astype(np.float64))
         ))
 
         return part_r, \
@@ -511,7 +575,7 @@ class BaseICs(BaseProfile):
             self.lin_log_eddington_interp(psi - v**2/2)
         ) / rho
     
-    def _get_proposal_distributions(self,min_scale=2,max_scale=5):
+    def _get_proposal_distributions(self,min_scale=3,max_scale=10):
         '''
         Get the proposal distributions for the rejection sampling of the velocities.
 
@@ -546,9 +610,9 @@ class BaseICs(BaseProfile):
 
         interp_sigma_r_bins = (self.sigma_r_bins[:-1] + self.sigma_r_bins[1:]) / 2
 
-        propose_v0_bins = np.zeros(self.N_bins-1)
-        propose_sigma_bins = np.zeros(self.N_bins-1)
-        propose_scale_bins = np.zeros(self.N_bins-1)
+        propose_v0_bins = np.zeros(self.N_bins-1, dtype=np.float64)
+        propose_sigma_bins = np.zeros(self.N_bins-1, dtype=np.float64)
+        propose_scale_bins = np.zeros(self.N_bins-1, dtype=np.float64)
 
         for i in tqdm(range(self.N_bins-1),desc="Proposal distributions:"):
             Eddington_peak = minimize(
@@ -606,7 +670,7 @@ class BaseICs(BaseProfile):
 
         proposal_indices = np.digitize(part_r, self.r_bins) - 1
 
-        part_v = np.zeros(self.N_part)
+        part_v = np.zeros(self.N_part, dtype=np.float64)
         rejected_indinces = np.arange(self.N_part)
 
         i = 0
@@ -620,8 +684,8 @@ class BaseICs(BaseProfile):
             sampling_indices = proposal_indices[rejected_indinces]
             v_sampled = np.random.normal(
                 propose_v0_bins[sampling_indices],
-                propose_scale_bins[sampling_indices] * propose_sigma_bins[sampling_indices]
-            )
+                propose_scale_bins[sampling_indices] * propose_sigma_bins[sampling_indices],
+            ).astype(np.float64)
 
             p_v_sampled_proposal = 1.1 * propose_scale_bins[sampling_indices] * self._Gaussian_distribution(
                 v_sampled, propose_v0_bins[sampling_indices], 
@@ -634,7 +698,7 @@ class BaseICs(BaseProfile):
 
             part_v[rejected_indinces] = v_sampled
             rejected_indinces = rejected_indinces[np.logical_or(
-                np.random.uniform(0, 1, n_resample) > p_v_sampled / p_v_sampled_proposal,
+                np.random.uniform(0, 1, n_resample).astype(np.float64) > p_v_sampled / p_v_sampled_proposal,
                 np.logical_or(
                     v_sampled > interp_vmax_bins[sampling_indices],
                     v_sampled < 0
@@ -644,8 +708,8 @@ class BaseICs(BaseProfile):
             if i % 10 == 0:
                 print(f"  inter {i}: {n_resample}")
 
-        part_v_phi = 2*np.pi * np.random.uniform(0, 1, self.N_part)
-        part_v_theta = np.arcsin(2*np.random.uniform(0, 1, self.N_part) - 1)
+        part_v_phi = 2*np.pi * np.random.uniform(0, 1, self.N_part).astype(np.float64)
+        part_v_theta = np.arcsin(2*np.random.uniform(0, 1, self.N_part).astype(np.float64) - 1)
 
         return part_v * np.cos(part_v_theta) * np.cos(part_v_phi), \
                part_v * np.cos(part_v_theta) * np.sin(part_v_phi), \
@@ -668,12 +732,12 @@ class BaseICs(BaseProfile):
         if output:
             f = ws.openfile(output)
 
-            massarr=np.array([0,part_mass,0,0,0,0], dtype="float64")
-            npart=np.array([0,self.N_part,0,0,0,0], dtype="uint32")
-            ws.write_block(f, "POS ", 1, np.array([part_x,part_y,part_z]).T)
-            ws.write_block(f, "VEL ", 1, np.array([part_vx,part_vy,part_vz]).T)
-            ws.write_block(f, "MASS", 1, np.repeat(part_mass, self.N_part))
-            ws.write_block(f, "ID  ", 1, np.arange(1,self.N_part+2))
+            massarr=np.array([0,part_mass,0,0,0,0], dtype=np.float64)
+            npart=np.array([0,self.N_part,0,0,0,0], dtype=np.int32)
+            ws.write_block(f, "POS ", 1, np.array([part_x,part_y,part_z], dtype=np.float64).T)
+            ws.write_block(f, "VEL ", 1, np.array([part_vx,part_vy,part_vz], dtype=np.float64).T)
+            ws.write_block(f, "MASS", 1, np.repeat(part_mass, self.N_part).astype(np.float64))
+            ws.write_block(f, "ID  ", 1, np.arange(1,self.N_part+2, dtype=np.int32))
 
             header=ws.snapshot_header(npart=npart, nall=npart, massarr=massarr)
             ws.writeheader(f, header)
