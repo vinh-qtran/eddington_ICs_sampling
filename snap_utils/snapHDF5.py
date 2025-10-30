@@ -237,7 +237,7 @@ class snapshot_header:
 			if (self.feedback == None):	
 				self.feedback = np.array([0], dtype="int32")
 			if (self.double == None):
-				self.double = np.array([0], dtype="int32")
+				self.double = np.array([1], dtype="int32")
 			if (self.NTYPES == None):
 				self.NTYPES = np.array([0], dtype="float64")
 
